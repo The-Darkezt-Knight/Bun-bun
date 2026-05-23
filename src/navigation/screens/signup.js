@@ -1,5 +1,5 @@
 import { Feather } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import {
     Image,
     KeyboardAvoidingView,
@@ -11,11 +11,48 @@ import {
     TextInput,
     TouchableOpacity,
     View,
+    ActivityIndicator
 } from 'react-native';
+import { AuthContext } from '../../context/AuthContext';
 
 export default function CreateAccountScreen({navigation}) {
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [isChecked, setIsChecked] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const { register, loginWithGoogle } = useContext(AuthContext);
+
+  const handleSignup = async () => {
+    if (!fullName || !email || !password) {
+      setErrorMsg('Please fill out all fields.');
+      return;
+    }
+    if (!isChecked) {
+      setErrorMsg('You must agree to the Terms and Conditions.');
+      return;
+    }
+    setLoading(true);
+    setErrorMsg('');
+    const result = await register(email, password, fullName);
+    if (!result.success) {
+      setErrorMsg(result.error);
+    }
+    setLoading(false);
+  };
+
+  const handleGoogleSignup = async () => {
+    setGoogleLoading(true);
+    setErrorMsg('');
+    const result = await loginWithGoogle();
+    if (!result.success) {
+      setErrorMsg(result.error);
+    }
+    setGoogleLoading(false);
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -47,6 +84,8 @@ export default function CreateAccountScreen({navigation}) {
             {/* Form Fields */}
             <View style={styles.formContainer}>
               
+              {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
+
               {/* Full Name Input */}
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Full Name</Text>
@@ -56,6 +95,8 @@ export default function CreateAccountScreen({navigation}) {
                     style={styles.input}
                     placeholder="Jane Doe"
                     placeholderTextColor="#B0B5AD"
+                    value={fullName}
+                    onChangeText={setFullName}
                   />
                 </View>
               </View>
@@ -71,6 +112,8 @@ export default function CreateAccountScreen({navigation}) {
                     placeholderTextColor="#B0B5AD"
                     keyboardType="email-address"
                     autoCapitalize="none"
+                    value={email}
+                    onChangeText={setEmail}
                   />
                 </View>
               </View>
@@ -85,6 +128,8 @@ export default function CreateAccountScreen({navigation}) {
                     placeholder="••••••••"
                     placeholderTextColor="#B0B5AD"
                     secureTextEntry={!isPasswordVisible}
+                    value={password}
+                    onChangeText={setPassword}
                   />
                   <TouchableOpacity
                     onPress={() => setIsPasswordVisible(!isPasswordVisible)}
@@ -116,9 +161,37 @@ export default function CreateAccountScreen({navigation}) {
             </View>
 
             {/* Create Account Button */}
-            <TouchableOpacity style={styles.submitButton}>
-              <Text style={styles.submitButtonText}>Create Account</Text>
-              <Feather name="arrow-right" size={20} color="#fff" style={styles.submitIcon} />
+            <TouchableOpacity style={styles.submitButton} onPress={handleSignup} disabled={loading || googleLoading}>
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Text style={styles.submitButtonText}>Create Account</Text>
+                  <Feather name="arrow-right" size={20} color="#fff" style={styles.submitIcon} />
+                </>
+              )}
+            </TouchableOpacity>
+
+            {/* Divider */}
+            <View style={styles.dividerContainer}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>OR</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            {/* Google Button */}
+            <TouchableOpacity style={styles.googleButton} onPress={handleGoogleSignup} disabled={googleLoading || loading}>
+              {googleLoading ? (
+                <ActivityIndicator color="#111827" />
+              ) : (
+                <>
+                  <Image 
+                    source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg' }} 
+                    style={styles.googleIcon} 
+                  />
+                  <Text style={styles.googleButtonText}>Continue with Google</Text>
+                </>
+              )}
             </TouchableOpacity>
 
             {/* Footer Login Link */}
@@ -191,6 +264,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#131511',
     marginBottom: 8,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
+    marginBottom: 12,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 15,
@@ -283,6 +362,43 @@ const styles = StyleSheet.create({
   },
   submitIcon: {
     marginLeft: 8,
+  },
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB',
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  googleButton: {
+    flexDirection: 'row',
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 32,
+    backgroundColor: '#fff',
+  },
+  googleIcon: {
+    width: 20,
+    height: 20,
+    marginRight: 12,
+  },
+  googleButtonText: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '600',
   },
   footer: {
     alignItems: 'center',

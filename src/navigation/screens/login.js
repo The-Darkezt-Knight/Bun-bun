@@ -1,27 +1,57 @@
 import { Feather, FontAwesome5 } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import {
-    Image,
-    ImageBackground,
-    KeyboardAvoidingView,
-    Platform,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  Image,
+  ImageBackground,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  ActivityIndicator
 } from 'react-native';
+import { AuthContext } from '../../context/AuthContext';
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const { login, loginWithGoogle } = useContext(AuthContext);
+
+  const handleLogin = async () => {
+    if (!email || !password) {
+      setErrorMsg('Please enter email and password.');
+      return;
+    }
+    setLoading(true);
+    setErrorMsg('');
+    const result = await login(email, password);
+    if (!result.success) {
+      setErrorMsg(result.error);
+    }
+    setLoading(false);
+  };
+
+  const handleGoogleLogin = async () => {
+    setGoogleLoading(true);
+    setErrorMsg('');
+    const result = await loginWithGoogle();
+    if (!result.success) {
+      setErrorMsg(result.error);
+    }
+    setGoogleLoading(false);
+  };
 
   return (
     <ImageBackground
       source={{
-        uri: 'https://plus.unsplash.com/premium_photo-1664640733898-d5c3f71f44e1?w=600&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MXx8YnJlYWR8ZW58MHx8MHx8fDA%3D?q=80&w=1000&auto=format&fit=crop', // Placeholder vegetable background
+        uri: 'https://images.unsplash.com/photo-1549413468-cd78edb7e75c?w=600&auto=format&fit=crop&q=60&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTB8fGJyZWFkfGVufDB8fDB8fHww?q=80&w=1000&auto=format&fit=crop', // Placeholder vegetable background
       }}
       style={styles.backgroundImage}
     >
@@ -31,23 +61,25 @@ export default function LoginScreen({ navigation }) {
           style={styles.container}
         >
           <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-            
+
             {/* --- MAIN CARD --- */}
             <View style={styles.cardContainer}>
-              
+
               {/* Header Section */}
               <View style={styles.headerContainer}>
                 <View style={styles.iconWrapper}>
                   <FontAwesome5 name="leaf" size={32} color="#3E5122" />
                 </View>
-                <Text style={styles.title}>Rest API'ers</Text>
-                <Text style={styles.subtitle}>Welcome Back tol!</Text>
-                <Text style={styles.subtitle}>nandyan palaka bakit hindi ka nag kokak</Text>
+                <Text style={styles.title}>BUN BUN</Text>
+                <Text style={styles.subtitle}>Welcome Back!</Text>
+                <Text style={styles.subtitle}>Enjoy the freshness of newly baked bread and pastries</Text>
               </View>
 
               {/* Form Fields */}
               <View style={styles.formContainer}>
-                
+
+                {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
+
                 {/* Email Input */}
                 <View style={styles.inputGroup}>
                   <Text style={styles.label}>Email Address</Text>
@@ -89,9 +121,15 @@ export default function LoginScreen({ navigation }) {
               </View>
 
               {/* Login Button */}
-              <TouchableOpacity style={styles.loginButton}>
-                <Text style={styles.loginButtonText}>Login</Text>
-                <Feather name="arrow-right" size={20} color="#fff" style={styles.submitIcon} />
+              <TouchableOpacity style={styles.loginButton} onPress={handleLogin} disabled={loading}>
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Text style={styles.loginButtonText}>Login</Text>
+                    <Feather name="arrow-right" size={20} color="#fff" style={styles.submitIcon} />
+                  </>
+                )}
               </TouchableOpacity>
 
               {/* Divider */}
@@ -102,22 +140,31 @@ export default function LoginScreen({ navigation }) {
               </View>
 
               {/* Google Button */}
-              <TouchableOpacity style={styles.googleButton}>
-                <Image 
-                  source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg' }} 
-                  style={styles.googleIcon} 
-                />
-                <Text style={styles.googleButtonText}>Continue with Google</Text>
+              <TouchableOpacity style={styles.googleButton} onPress={handleGoogleLogin} disabled={googleLoading || loading}>
+                {googleLoading ? (
+                  <ActivityIndicator color="#111827" />
+                ) : (
+                  <>
+                    <Image
+                      source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg' }}
+                      style={styles.googleIcon}
+                    />
+                    <Text style={styles.googleButtonText}>Continue with Google</Text>
+                  </>
+                )}
               </TouchableOpacity>
 
               {/* Footer Register Link */}
               <View style={styles.footer}>
-                <Text
-                style={styles.footerText}
-                onPress={() => navigation?.navigate('Signup')}
-                >
+                <Text style={styles.footerText}>
                   New to the market?{' '}
+                  <Text
+                    style={styles.linkText}
+                    onPress={() => navigation?.navigate('Signup')}
+                  >
+                    Create an account
                   </Text>
+                </Text>
               </View>
 
             </View>
@@ -168,6 +215,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#3E5122', // Dark olive green
     marginBottom: 8,
+  },
+  errorText: {
+    color: '#DC2626',
+    fontSize: 14,
+    marginBottom: 12,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 15,
