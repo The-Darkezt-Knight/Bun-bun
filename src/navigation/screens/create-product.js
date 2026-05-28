@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useContext, useState } from 'react';
 import {
+    ActivityIndicator,
+    Alert,
     StyleSheet,
     View,
     Text,
@@ -12,6 +14,8 @@ import {
     KeyboardAvoidingView,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { AuthContext } from '../../context/AuthContext';
+import { createProduct } from '../../services/products';
 
 // --- Design Tokens (Extracted from Tailwind Config) ---
 const theme = {
@@ -45,6 +49,36 @@ const theme = {
         xl: 12,
         full: 9999,
     },
+};
+
+const DEFAULT_IMAGE_URL = 'https://lh3.googleusercontent.com/aida-public/AB6AXuCg6JL40Ltxkyu76DG7O3QyapdSEHvjuZyIfyhnuUxgBv-klnmMb7LULkG-ZSIGpskrdDycVuORp2Kv22eTEeuaaU-4pDmVgvjbNSjxUfm-ZJSQ5zBcdodMWFZQ8wpakxS7KYGqr-aFbwjwisw_qJYYLqQ87iC0cDFodtxXGbapXtPcljH2F9H5CYP-frS4mWSvYuVDaRlB-PTYR5dluvnwRoyG_UYb5zYaqYOo-W8NNmAN0EosyGnfdqwux8eUDiK3npNVXGiITLc';
+
+const CATEGORIES = ['Artisan Breads', 'Pastries', 'Cakes', 'Cookies', 'Savory Bakes'];
+const UNITS = ['Loaf', 'Piece', 'Box', 'Pack', 'Tray'];
+
+const initialForm = {
+    name: '',
+    category: CATEGORIES[0],
+    description: '',
+    imageUrl: DEFAULT_IMAGE_URL,
+    unitPrice: '',
+    bulkPrice: '',
+    stockQty: '',
+    unit: UNITS[0],
+    ingredients: '',
+    bakingTimeMinutes: '',
+    storageTempCelsius: '',
+    shelfLifeDays: '',
+};
+
+const toNumber = (value) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
 };
 
 // --- Helper Components ---
@@ -98,6 +132,9 @@ const CustomCheckbox = ({ label, checked, onPress }) => (
 
 // --- Main Screen ---
 export default function NewProductScreen({ navigation }) {
+    const { currentUser, userData } = useContext(AuthContext);
+    const [form, setForm] = useState(initialForm);
+    const [isSaving, setIsSaving] = useState(false);
     const [allergens, setAllergens] = useState({
         Gluten: false,
         Dairy: false,
@@ -107,6 +144,103 @@ export default function NewProductScreen({ navigation }) {
 
     const toggleAllergen = (key) => {
         setAllergens((prev) => ({ ...prev, [key]: !prev[key] }));
+    };
+
+    const updateField = (field, value) => {
+        setForm((prev) => ({ ...prev, [field]: value }));
+    };
+
+    const cycleOption = (field, options) => {
+        setForm((prev) => {
+            const currentIndex = options.indexOf(prev[field]);
+            const nextIndex = currentIndex === options.length - 1 ? 0 : currentIndex + 1;
+            return { ...prev, [field]: options[nextIndex] };
+        });
+    };
+
+    const resetForm = () => {
+        setForm(initialForm);
+        setAllergens({
+            Gluten: false,
+            Dairy: false,
+            Nuts: false,
+            Soy: false,
+        });
+    };
+
+    const validateForm = () => {
+        if (!form.name.trim()) {
+            return 'Product name is required.';
+        }
+        if (!form.description.trim()) {
+            return 'Short description is required.';
+        }
+        if (toNumber(form.unitPrice) === null) {
+            return 'Enter a valid unit price.';
+        }
+        if (toNumber(form.stockQty) === null) {
+            return 'Enter a valid stock quantity.';
+        }
+        if (!form.ingredients.trim()) {
+            return 'Ingredients list is required.';
+        }
+
+        return null;
+    };
+
+    const handleSaveProduct = async () => {
+        const validationError = validateForm();
+        if (validationError) {
+            Alert.alert('Missing product information', validationError);
+            return;
+        }
+
+        setIsSaving(true);
+
+        const selectedAllergens = Object.entries(allergens)
+            .filter(([, checked]) => checked)
+            .map(([name]) => name);
+        const stockQty = toNumber(form.stockQty);
+
+        const result = await createProduct({
+            name: form.name.trim(),
+            searchName: form.name.trim().toLowerCase(),
+            category: form.category,
+            description: form.description.trim(),
+            imageUrl: form.imageUrl,
+            pricing: {
+                unitPrice: toNumber(form.unitPrice),
+                bulkPrice: toNumber(form.bulkPrice),
+                currency: 'USD',
+            },
+            inventory: {
+                stockQty,
+                unit: form.unit,
+                status: stockQty > 0 ? 'available' : 'out_of_stock',
+            },
+            ingredients: form.ingredients.trim(),
+            allergens: selectedAllergens,
+            production: {
+                bakingTimeMinutes: toNumber(form.bakingTimeMinutes),
+                storageTempCelsius: toNumber(form.storageTempCelsius),
+                shelfLifeDays: toNumber(form.shelfLifeDays),
+            },
+            qualityScore: 84,
+            isActive: true,
+            createdBy: currentUser?.uid || null,
+            createdByName: userData?.fullName || currentUser?.email || null,
+        });
+
+        setIsSaving(false);
+
+        if (!result.success) {
+            Alert.alert('Product not saved', result.error);
+            return;
+        }
+
+        Alert.alert('Product saved', 'The product has been added to Firebase.', [
+            { text: 'OK', onPress: () => navigation.navigate('AdminDashboard') },
+        ]);
     };
 
     return (
@@ -149,13 +283,18 @@ export default function NewProductScreen({ navigation }) {
                     <View style={styles.section}>
                         <SectionHeader icon="bakery-dining" title="PRODUCT BASICS" />
                         <View style={styles.card}>
-                            <CustomInput label="Product Name" placeholder="e.g. Sourdough Batard" />
+                            <CustomInput
+                                label="Product Name"
+                                placeholder="e.g. Sourdough Batard"
+                                value={form.name}
+                                onChangeText={(value) => updateField('name', value)}
+                            />
 
                             {/* Mock Dropdown */}
                             <View style={styles.inputContainer}>
                                 <Text style={styles.label}>Category</Text>
-                                <TouchableOpacity style={styles.inputWrapper}>
-                                    <Text style={[styles.input, { lineHeight: 24 }]}>Artisan Breads</Text>
+                                <TouchableOpacity style={styles.inputWrapper} onPress={() => cycleOption('category', CATEGORIES)}>
+                                    <Text style={[styles.input, { lineHeight: 24 }]}>{form.category}</Text>
                                     <MaterialIcons name="arrow-drop-down" size={24} color={theme.colors.onSurfaceVariant} style={{ position: 'absolute', right: 12, top: 12 }} />
                                 </TouchableOpacity>
                             </View>
@@ -165,6 +304,8 @@ export default function NewProductScreen({ navigation }) {
                                 placeholder="Describe the crumb, crust and flavor profile..."
                                 multiline
                                 numberOfLines={3}
+                                value={form.description}
+                                onChangeText={(value) => updateField('description', value)}
                             />
                         </View>
                     </View>
@@ -174,7 +315,7 @@ export default function NewProductScreen({ navigation }) {
                         <SectionHeader icon="image" title="MEDIA" />
                         <TouchableOpacity style={styles.mediaUploadContainer} activeOpacity={0.8}>
                             <Image
-                                source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCg6JL40Ltxkyu76DG7O3QyapdSEHvjuZyIfyhnuUxgBv-klnmMb7LULkG-ZSIGpskrdDycVuORp2Kv22eTEeuaaU-4pDmVgvjbNSjxUfm-ZJSQ5zBcdodMWFZQ8wpakxS7KYGqr-aFbwjwisw_qJYYLqQ87iC0cDFodtxXGbapXtPcljH2F9H5CYP-frS4mWSvYuVDaRlB-PTYR5dluvnwRoyG_UYb5zYaqYOo-W8NNmAN0EosyGnfdqwux8eUDiK3npNVXGiITLc' }}
+                                source={{ uri: form.imageUrl }}
                                 style={styles.mediaBgImage}
                             />
                             <MaterialIcons name="add-a-photo" size={36} color={theme.colors.outline} style={{ marginBottom: theme.spacing.base }} />
@@ -188,16 +329,39 @@ export default function NewProductScreen({ navigation }) {
                         <SectionHeader icon="payments" title="PRICING & INVENTORY" />
                         <View style={styles.card}>
                             <View style={styles.row}>
-                                <View style={styles.flex1}><CustomInput label="Unit Price" keyboardType="decimal-pad" iconPrefix="$" /></View>
-                                <View style={styles.flex1}><CustomInput label="Bulk Price (12+)" keyboardType="decimal-pad" iconPrefix="$" /></View>
+                                <View style={styles.flex1}>
+                                    <CustomInput
+                                        label="Unit Price"
+                                        keyboardType="decimal-pad"
+                                        iconPrefix="$"
+                                        value={form.unitPrice}
+                                        onChangeText={(value) => updateField('unitPrice', value)}
+                                    />
+                                </View>
+                                <View style={styles.flex1}>
+                                    <CustomInput
+                                        label="Bulk Price (12+)"
+                                        keyboardType="decimal-pad"
+                                        iconPrefix="$"
+                                        value={form.bulkPrice}
+                                        onChangeText={(value) => updateField('bulkPrice', value)}
+                                    />
+                                </View>
                             </View>
                             <View style={styles.row}>
-                                <View style={styles.flex1}><CustomInput label="Stock Qty" keyboardType="number-pad" /></View>
+                                <View style={styles.flex1}>
+                                    <CustomInput
+                                        label="Stock Qty"
+                                        keyboardType="number-pad"
+                                        value={form.stockQty}
+                                        onChangeText={(value) => updateField('stockQty', value)}
+                                    />
+                                </View>
                                 <View style={styles.flex1}>
                                     <View style={styles.inputContainer}>
                                         <Text style={styles.label}>Unit</Text>
-                                        <TouchableOpacity style={styles.inputWrapper}>
-                                            <Text style={[styles.input, { lineHeight: 24 }]}>Loaf</Text>
+                                        <TouchableOpacity style={styles.inputWrapper} onPress={() => cycleOption('unit', UNITS)}>
+                                            <Text style={[styles.input, { lineHeight: 24 }]}>{form.unit}</Text>
                                             <MaterialIcons name="arrow-drop-down" size={24} color={theme.colors.onSurfaceVariant} style={{ position: 'absolute', right: 12, top: 12 }} />
                                         </TouchableOpacity>
                                     </View>
@@ -215,6 +379,8 @@ export default function NewProductScreen({ navigation }) {
                                 placeholder="Organic wheat flour, spring water, sea salt..."
                                 multiline
                                 numberOfLines={4}
+                                value={form.ingredients}
+                                onChangeText={(value) => updateField('ingredients', value)}
                             />
                             <View style={styles.inputContainer}>
                                 <Text style={styles.label}>Allergen Declarations</Text>
@@ -237,10 +403,34 @@ export default function NewProductScreen({ navigation }) {
                     <View style={styles.section}>
                         <SectionHeader icon="timer" title="PRODUCTION DETAILS" />
                         <View style={styles.card}>
-                            <CustomInput label="Baking Time (Minutes)" placeholder="45" keyboardType="number-pad" />
+                            <CustomInput
+                                label="Baking Time (Minutes)"
+                                placeholder="45"
+                                keyboardType="number-pad"
+                                value={form.bakingTimeMinutes}
+                                onChangeText={(value) => updateField('bakingTimeMinutes', value)}
+                            />
                             <View style={styles.row}>
-                                <View style={styles.flex1}><CustomInput label="Storage Temp" placeholder="20" keyboardType="number-pad" iconSuffix="°C" /></View>
-                                <View style={styles.flex1}><CustomInput label="Shelf Life" placeholder="3" keyboardType="number-pad" iconSuffix="Days" /></View>
+                                <View style={styles.flex1}>
+                                    <CustomInput
+                                        label="Storage Temp"
+                                        placeholder="20"
+                                        keyboardType="number-pad"
+                                        iconSuffix="C"
+                                        value={form.storageTempCelsius}
+                                        onChangeText={(value) => updateField('storageTempCelsius', value)}
+                                    />
+                                </View>
+                                <View style={styles.flex1}>
+                                    <CustomInput
+                                        label="Shelf Life"
+                                        placeholder="3"
+                                        keyboardType="number-pad"
+                                        iconSuffix="Days"
+                                        value={form.shelfLifeDays}
+                                        onChangeText={(value) => updateField('shelfLifeDays', value)}
+                                    />
+                                </View>
                             </View>
                         </View>
                     </View>
@@ -249,12 +439,18 @@ export default function NewProductScreen({ navigation }) {
 
                 {/* Sticky Footer Actions */}
                 <View style={styles.footer}>
-                    <TouchableOpacity style={styles.btnDiscard}>
+                    <TouchableOpacity style={styles.btnDiscard} onPress={resetForm} disabled={isSaving}>
                         <Text style={styles.btnDiscardText}>Discard</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.btnSave}>
-                        <Text style={styles.btnSaveText}>Save Product</Text>
-                        <MaterialIcons name="check-circle" size={20} color={theme.colors.onPrimary} />
+                    <TouchableOpacity style={[styles.btnSave, isSaving && styles.btnDisabled]} onPress={handleSaveProduct} disabled={isSaving}>
+                        {isSaving ? (
+                            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                        ) : (
+                            <>
+                                <Text style={styles.btnSaveText}>Save Product</Text>
+                                <MaterialIcons name="check-circle" size={20} color={theme.colors.onPrimary} />
+                            </>
+                        )}
                     </TouchableOpacity>
                 </View>
             </KeyboardAvoidingView>
@@ -535,6 +731,9 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.2,
         shadowRadius: 8,
         elevation: 4,
+    },
+    btnDisabled: {
+        opacity: 0.7,
     },
     btnSaveText: {
         fontSize: 14,

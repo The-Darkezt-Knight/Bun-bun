@@ -1,5 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Modal,
     StyleSheet,
     View,
     Text,
@@ -9,8 +13,10 @@ import {
     SafeAreaView,
     Platform,
     StatusBar,
+    TextInput,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { deleteProduct, subscribeToProducts, updateProduct } from '../../services/products';
 
 // --- Design Tokens (Extracted from Tailwind Config) ---
 const theme = {
@@ -60,9 +66,47 @@ const theme = {
     }
 };
 
+const FALLBACK_PRODUCT_IMAGE = 'https://lh3.googleusercontent.com/aida-public/AB6AXuAFuk2vBjSAKDrvGn83XTMiUqW59gPUKs13toJ5UosGfjl61NO_noFcHahV3MrcUqmN3ELtDbr9MVLqb5ysdASgRkLOWbgN86C3bhNKe4-BMinxBTdsVhdeRo_T5yJXCqfyOgRfSrSb_xW_w_7py_IKNJGX3TUdz5cWqeVWlRz4qYGEAIF4Yj-J0txd4r75uUeiw62bJkpF967RDS2kU8iB1yA4lAzedwfIj7qZNMAubuKpj3-pTN0CdXM783spVzYlvydKeN_M0jQ';
+
+const getInventoryStatus = (product) => {
+    const stockQty = product?.inventory?.stockQty ?? 0;
+
+    if (stockQty <= 0) {
+        return { label: 'Sold Out', isAvailable: false };
+    }
+
+    return {
+        label: `${stockQty} ${product?.inventory?.unit || 'items'} available`,
+        isAvailable: true,
+    };
+};
+
+const toEditableNumber = (value) => {
+    if (value === null || value === undefined) {
+        return '';
+    }
+
+    return String(value);
+};
+
+const toNumber = (value) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
 // --- Helper Components ---
-const IconButton = ({ icon, color, size = 24, style, onPress }) => (
-    <TouchableOpacity style={[styles.iconBtn, style]} onPress={onPress}>
+const IconButton = ({ icon, color, size = 24, style, onPress, disabled }) => (
+    <TouchableOpacity
+        style={[styles.iconBtn, disabled && styles.iconBtnDisabled, style]}
+        onPress={disabled ? undefined : onPress}
+        disabled={disabled}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+    >
         <MaterialIcons name={icon} size={size} color={color || theme.colors.onSurfaceVariant} />
     </TouchableOpacity>
 );
@@ -84,7 +128,19 @@ const ProductCard = ({ title, price, stock, stockLabel, isLowStock, imageUrl }) 
     </TouchableOpacity>
 );
 
-const InventoryItem = ({ title, status, isAvailable, imageUrl }) => (
+const EditInput = ({ label, multiline, ...props }) => (
+    <View style={styles.editInputGroup}>
+        <Text style={styles.editLabel}>{label}</Text>
+        <TextInput
+            style={[styles.editInput, multiline && styles.editInputMultiline]}
+            placeholderTextColor={theme.colors.outlineVariant}
+            multiline={multiline}
+            {...props}
+        />
+    </View>
+);
+
+const InventoryItem = ({ title, status, isAvailable, imageUrl, onEdit, onDelete, isDeleting }) => (
     <View style={styles.inventoryItem}>
         <View style={styles.inventoryImageWrapper}>
             <Image source={{ uri: imageUrl }} style={styles.inventoryImage} />
@@ -97,14 +153,177 @@ const InventoryItem = ({ title, status, isAvailable, imageUrl }) => (
             </View>
         </View>
         <View style={styles.inventoryActions}>
-            <IconButton icon="edit" color={theme.colors.onSurfaceVariant} />
-            <IconButton icon="delete" color={theme.colors.error} style={{ marginLeft: 4 }} />
+            <IconButton icon="edit" color={theme.colors.onSurfaceVariant} onPress={onEdit} />
+            {isDeleting ? (
+                <View style={[styles.iconBtn, { marginLeft: 4 }]}>
+                    <ActivityIndicator size="small" color={theme.colors.outline} />
+                </View>
+            ) : (
+                <IconButton
+                    icon="delete"
+                    color={theme.colors.error}
+                    style={{ marginLeft: 4 }}
+                    onPress={onDelete}
+                />
+            )}
         </View>
     </View>
 );
 
 // --- Main Screen ---
 export default function DashboardScreen({ navigation }) {
+    const [products, setProducts] = useState([]);
+    const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+    const [productsError, setProductsError] = useState('');
+    const [deletingProductId, setDeletingProductId] = useState(null);
+    const [editingProduct, setEditingProduct] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+    useEffect(() => {
+        const unsubscribe = subscribeToProducts(
+            (loadedProducts) => {
+                setProducts(loadedProducts);
+                setProductsError('');
+                setIsLoadingProducts(false);
+            },
+            (errorMessage) => {
+                setProductsError(errorMessage);
+                setIsLoadingProducts(false);
+            }
+        );
+
+        return unsubscribe;
+    }, []);
+
+    const openEditProduct = (product) => {
+        setEditingProduct(product);
+        setEditForm({
+            name: product.name || '',
+            category: product.category || '',
+            description: product.description || '',
+            imageUrl: product.imageUrl || '',
+            unitPrice: toEditableNumber(product.pricing?.unitPrice),
+            bulkPrice: toEditableNumber(product.pricing?.bulkPrice),
+            stockQty: toEditableNumber(product.inventory?.stockQty),
+            unit: product.inventory?.unit || '',
+            ingredients: product.ingredients || '',
+            bakingTimeMinutes: toEditableNumber(product.production?.bakingTimeMinutes),
+            storageTempCelsius: toEditableNumber(product.production?.storageTempCelsius),
+            shelfLifeDays: toEditableNumber(product.production?.shelfLifeDays),
+        });
+    };
+
+    const closeEditProduct = () => {
+        if (isSavingEdit) {
+            return;
+        }
+
+        setEditingProduct(null);
+        setEditForm(null);
+    };
+
+    const updateEditField = (field, value) => {
+        setEditForm((prev) => ({ ...prev, [field]: value }));
+    };
+
+    const saveEditedProduct = async () => {
+        if (!editingProduct?.id || !editForm) {
+            return;
+        }
+
+        if (!editForm.name.trim()) {
+            Alert.alert('Missing product information', 'Product name is required.');
+            return;
+        }
+        if (toNumber(editForm.unitPrice) === null) {
+            Alert.alert('Missing product information', 'Enter a valid unit price.');
+            return;
+        }
+        if (toNumber(editForm.stockQty) === null) {
+            Alert.alert('Missing product information', 'Enter a valid stock quantity.');
+            return;
+        }
+
+        const stockQty = toNumber(editForm.stockQty);
+
+        setIsSavingEdit(true);
+        const result = await updateProduct(editingProduct.id, {
+            name: editForm.name.trim(),
+            searchName: editForm.name.trim().toLowerCase(),
+            category: editForm.category.trim(),
+            description: editForm.description.trim(),
+            imageUrl: editForm.imageUrl.trim() || FALLBACK_PRODUCT_IMAGE,
+            pricing: {
+                unitPrice: toNumber(editForm.unitPrice),
+                bulkPrice: toNumber(editForm.bulkPrice),
+                currency: editingProduct.pricing?.currency || 'USD',
+            },
+            inventory: {
+                stockQty,
+                unit: editForm.unit.trim() || 'items',
+                status: stockQty > 0 ? 'available' : 'out_of_stock',
+            },
+            ingredients: editForm.ingredients.trim(),
+            allergens: editingProduct.allergens || [],
+            production: {
+                bakingTimeMinutes: toNumber(editForm.bakingTimeMinutes),
+                storageTempCelsius: toNumber(editForm.storageTempCelsius),
+                shelfLifeDays: toNumber(editForm.shelfLifeDays),
+            },
+            qualityScore: editingProduct.qualityScore ?? 84,
+            isActive: editingProduct.isActive ?? true,
+            createdBy: editingProduct.createdBy || null,
+            createdByName: editingProduct.createdByName || null,
+        });
+        setIsSavingEdit(false);
+
+        if (!result.success) {
+            Alert.alert('Product not updated', result.error);
+            return;
+        }
+
+        closeEditProduct();
+    };
+
+    const removeProduct = async (product) => {
+        if (!product?.id || deletingProductId) {
+            return;
+        }
+
+        setDeletingProductId(product.id);
+        const result = await deleteProduct(product.id);
+        setDeletingProductId(null);
+
+        if (!result.success) {
+            Alert.alert('Product not deleted', result.error);
+        }
+    };
+
+    const handleDeleteProduct = (product) => {
+        const message = `Delete ${product.name || 'this product'} from inventory? This will remove it from Firebase.`;
+
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            if (window.confirm(message)) {
+                removeProduct(product);
+            }
+            return;
+        }
+
+        Alert.alert(
+            'Delete product',
+            message,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => removeProduct(product),
+                },
+            ]
+        );
+    };
+
     return (
         <SafeAreaView style={styles.safeArea}>
             <StatusBar barStyle="dark-content" backgroundColor={theme.colors.surface} />
@@ -202,24 +421,37 @@ export default function DashboardScreen({ navigation }) {
                 <View style={styles.section}>
                     <Text style={[styles.sectionTitle, { marginBottom: theme.spacing.sm }]}>Manage Inventory</Text>
                     <View style={styles.inventoryList}>
-                        <InventoryItem
-                            title="Sesame Bagels (6pk)"
-                            status="Available"
-                            isAvailable={true}
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAFuk2vBjSAKDrvGn83XTMiUqW59gPUKs13toJ5UosGfjl61NO_noFcHahV3MrcUqmN3ELtDbr9MVLqb5ysdASgRkLOWbgN86C3bhNKe4-BMinxBTdsVhdeRo_T5yJXCqfyOgRfSrSb_xW_w_7py_IKNJGX3TUdz5cWqeVWlRz4qYGEAIF4Yj-J0txd4r75uUeiw62bJkpF967RDS2kU8iB1yA4lAzedwfIj7qZNMAubuKpj3-pTN0CdXM783spVzYlvydKeN_M0jQ"
-                        />
-                        <InventoryItem
-                            title="Cinnamon Swirls"
-                            status="Sold Out"
-                            isAvailable={false}
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAW7XutBXJu0I7FuApUkhMGJCXOBhXK4F0OtY0I-XqU-RVuG4I-nqw9y1A0ovbe2WVIRWORR4i_P1IV8cVvd17o-s7enwUbumnk_raefpdRY-X4x0aGYXKanwpjIzTca43l1PegGlOKc3hAmaByHpHyoVIHshB8Xo9q5Y58MBgcCZdnQPf1yUiwSknUs8kzvilMzzolqb3s_rd9GJQQyaZuV8BTYF-LBucsTmWC5y9hBceBGaPk3LjroyTYOZIV_IsLNWdOelCSJNE"
-                        />
-                        <InventoryItem
-                            title="Dark Rye Loaf"
-                            status="Available"
-                            isAvailable={true}
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAmr8Wf6cXnVD8p4OmbntHZHbrgKCdrk-yC7Q1dfbwHfPqHvVTdP_-OrAJrTe6AVhUMTvYD18XK_Tv-TQKQAEYd1Yv83lLtTFUhgu-YGIMaklAA3IfUs61R_Us0rzKo1HDVLWdgLlSM2yQ6pHSjFtC5jJQbb5rgsdRN0gmn0NZnBupZ5nTHdsl7KkAjO7uaFTL-EUqxbAwUTBQUxFZKyMvfsnL8wMzBu2wfJ4WYg7EMF-tM5kwYFUk6PJeankUXnpt0TrutJnA5sqc"
-                        />
+                        {isLoadingProducts ? (
+                            <View style={styles.inventoryState}>
+                                <ActivityIndicator size="small" color={theme.colors.primary} />
+                                <Text style={styles.inventoryStateText}>Loading products...</Text>
+                            </View>
+                        ) : productsError ? (
+                            <View style={styles.inventoryState}>
+                                <Text style={styles.inventoryErrorText}>{productsError}</Text>
+                            </View>
+                        ) : products.length === 0 ? (
+                            <View style={styles.inventoryState}>
+                                <Text style={styles.inventoryStateText}>No products created yet.</Text>
+                            </View>
+                        ) : (
+                            products.map((product) => {
+                                const status = getInventoryStatus(product);
+
+                                return (
+                                    <InventoryItem
+                                        key={product.id}
+                                        title={product.name || 'Untitled Product'}
+                                        status={status.label}
+                                        isAvailable={status.isAvailable}
+                                        imageUrl={product.imageUrl || FALLBACK_PRODUCT_IMAGE}
+                                        isDeleting={deletingProductId === product.id}
+                                        onEdit={() => openEditProduct(product)}
+                                        onDelete={() => handleDeleteProduct(product)}
+                                    />
+                                );
+                            })
+                        )}
                     </View>
                 </View>
 
@@ -251,6 +483,134 @@ export default function DashboardScreen({ navigation }) {
                     <Text style={styles.navText}>Settings</Text>
                 </TouchableOpacity>
             </View>
+
+            <Modal
+                visible={Boolean(editForm)}
+                animationType="slide"
+                transparent
+                onRequestClose={closeEditProduct}
+            >
+                <KeyboardAvoidingView
+                    style={styles.modalOverlay}
+                    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                >
+                    <View style={styles.editModal}>
+                        <View style={styles.editModalHeader}>
+                            <Text style={styles.editModalTitle}>Edit Product</Text>
+                            <IconButton icon="close" onPress={closeEditProduct} disabled={isSavingEdit} />
+                        </View>
+
+                        {editForm && (
+                            <ScrollView contentContainerStyle={styles.editFormContent} showsVerticalScrollIndicator={false}>
+                                <EditInput
+                                    label="Product Name"
+                                    value={editForm.name}
+                                    onChangeText={(value) => updateEditField('name', value)}
+                                />
+                                <EditInput
+                                    label="Category"
+                                    value={editForm.category}
+                                    onChangeText={(value) => updateEditField('category', value)}
+                                />
+                                <EditInput
+                                    label="Description"
+                                    value={editForm.description}
+                                    onChangeText={(value) => updateEditField('description', value)}
+                                    multiline
+                                />
+                                <EditInput
+                                    label="Image URL"
+                                    value={editForm.imageUrl}
+                                    onChangeText={(value) => updateEditField('imageUrl', value)}
+                                />
+
+                                <View style={styles.editRow}>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Unit Price"
+                                            value={editForm.unitPrice}
+                                            onChangeText={(value) => updateEditField('unitPrice', value)}
+                                            keyboardType="decimal-pad"
+                                        />
+                                    </View>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Bulk Price"
+                                            value={editForm.bulkPrice}
+                                            onChangeText={(value) => updateEditField('bulkPrice', value)}
+                                            keyboardType="decimal-pad"
+                                        />
+                                    </View>
+                                </View>
+
+                                <View style={styles.editRow}>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Stock Qty"
+                                            value={editForm.stockQty}
+                                            onChangeText={(value) => updateEditField('stockQty', value)}
+                                            keyboardType="number-pad"
+                                        />
+                                    </View>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Unit"
+                                            value={editForm.unit}
+                                            onChangeText={(value) => updateEditField('unit', value)}
+                                        />
+                                    </View>
+                                </View>
+
+                                <EditInput
+                                    label="Ingredients"
+                                    value={editForm.ingredients}
+                                    onChangeText={(value) => updateEditField('ingredients', value)}
+                                    multiline
+                                />
+
+                                <View style={styles.editRow}>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Baking Time"
+                                            value={editForm.bakingTimeMinutes}
+                                            onChangeText={(value) => updateEditField('bakingTimeMinutes', value)}
+                                            keyboardType="number-pad"
+                                        />
+                                    </View>
+                                    <View style={styles.editRowItem}>
+                                        <EditInput
+                                            label="Shelf Life"
+                                            value={editForm.shelfLifeDays}
+                                            onChangeText={(value) => updateEditField('shelfLifeDays', value)}
+                                            keyboardType="number-pad"
+                                        />
+                                    </View>
+                                </View>
+
+                                <EditInput
+                                    label="Storage Temp"
+                                    value={editForm.storageTempCelsius}
+                                    onChangeText={(value) => updateEditField('storageTempCelsius', value)}
+                                    keyboardType="number-pad"
+                                />
+                            </ScrollView>
+                        )}
+
+                        <View style={styles.editActions}>
+                            <TouchableOpacity style={styles.editCancelButton} onPress={closeEditProduct} disabled={isSavingEdit}>
+                                <Text style={styles.editCancelText}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[styles.editSaveButton, isSavingEdit && styles.iconBtnDisabled]} onPress={saveEditedProduct} disabled={isSavingEdit}>
+                                {isSavingEdit ? (
+                                    <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                                ) : (
+                                    <Text style={styles.editSaveText}>Save Changes</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
 
         </SafeAreaView>
     );
@@ -313,6 +673,9 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: theme.borderRadius.full,
+    },
+    iconBtnDisabled: {
+        opacity: 0.6,
     },
     profileWrapper: {
         width: 32,
@@ -502,6 +865,27 @@ const styles = StyleSheet.create({
     inventoryList: {
         gap: theme.spacing.sm,
     },
+    inventoryState: {
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        padding: theme.spacing.md,
+        borderRadius: theme.borderRadius.xl,
+        borderWidth: 1,
+        borderColor: theme.colors.surfaceContainer,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 88,
+        gap: theme.spacing.base,
+    },
+    inventoryStateText: {
+        ...theme.typography.bodySm,
+        color: theme.colors.onSurfaceVariant,
+        textAlign: 'center',
+    },
+    inventoryErrorText: {
+        ...theme.typography.bodySm,
+        color: theme.colors.error,
+        textAlign: 'center',
+    },
     inventoryItem: {
         backgroundColor: theme.colors.surfaceContainerLowest,
         padding: theme.spacing.sm,
@@ -556,6 +940,100 @@ const styles = StyleSheet.create({
     inventoryActions: {
         flexDirection: 'row',
         alignItems: 'center',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.35)',
+        justifyContent: 'flex-end',
+    },
+    editModal: {
+        maxHeight: '88%',
+        backgroundColor: theme.colors.surface,
+        borderTopLeftRadius: theme.borderRadius.xl,
+        borderTopRightRadius: theme.borderRadius.xl,
+        borderWidth: 1,
+        borderColor: theme.colors.surfaceContainer,
+        overflow: 'hidden',
+    },
+    editModalHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: theme.spacing.marginMobile,
+        paddingVertical: theme.spacing.sm,
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.surfaceContainer,
+    },
+    editModalTitle: {
+        ...theme.typography.headlineLgMobile,
+        color: theme.colors.primary,
+        fontSize: 22,
+        lineHeight: 28,
+    },
+    editFormContent: {
+        padding: theme.spacing.marginMobile,
+        gap: theme.spacing.sm,
+    },
+    editInputGroup: {
+        gap: theme.spacing.xs,
+    },
+    editLabel: {
+        ...theme.typography.labelMd,
+        color: theme.colors.onSurfaceVariant,
+    },
+    editInput: {
+        borderWidth: 1,
+        borderColor: theme.colors.outlineVariant,
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        borderRadius: theme.borderRadius.lg,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 15,
+        color: theme.colors.onSurface,
+    },
+    editInputMultiline: {
+        minHeight: 88,
+        textAlignVertical: 'top',
+    },
+    editRow: {
+        flexDirection: 'row',
+        gap: theme.spacing.sm,
+    },
+    editRowItem: {
+        flex: 1,
+    },
+    editActions: {
+        flexDirection: 'row',
+        gap: theme.spacing.sm,
+        padding: theme.spacing.marginMobile,
+        borderTopWidth: 1,
+        borderTopColor: theme.colors.surfaceContainer,
+        backgroundColor: theme.colors.surface,
+    },
+    editCancelButton: {
+        flex: 1,
+        borderWidth: 1,
+        borderColor: theme.colors.outlineVariant,
+        borderRadius: theme.borderRadius.full,
+        paddingVertical: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    editCancelText: {
+        ...theme.typography.labelLg,
+        color: theme.colors.onSurfaceVariant,
+    },
+    editSaveButton: {
+        flex: 1.4,
+        backgroundColor: theme.colors.primary,
+        borderRadius: theme.borderRadius.full,
+        paddingVertical: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    editSaveText: {
+        ...theme.typography.labelLg,
+        color: theme.colors.onPrimary,
     },
     fab: {
         position: 'absolute',
