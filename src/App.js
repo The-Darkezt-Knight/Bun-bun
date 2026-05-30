@@ -5,7 +5,7 @@ import { ActivityIndicator, View } from 'react-native';
 
 import Login from './navigation/screens/login';
 import Signup from './navigation/screens/signup';
-import Home from './navigation/screens/home';
+import Store from './navigation/screens/store';
 import AdminDashboard from './navigation/screens/admin-dashboard';
 import CreateProduct from './navigation/screens/create-product';
 import { AuthProvider, AuthContext } from './context/AuthContext';
@@ -35,11 +35,10 @@ function RootNavigator() {
             <>
               <Stack.Screen name="AdminDashboard" component={AdminDashboard} />
               <Stack.Screen name="CreateProduct" component={CreateProduct} />
-              <Stack.Screen name="Home" component={Home} />
             </>
           ) : (
             <>
-              <Stack.Screen name="Home" component={Home} />
+              <Stack.Screen name="Store" component={Store} />
             </>
           )
         ) : (

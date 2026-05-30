@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -16,6 +16,14 @@ import {
     TextInput,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { AuthContext } from '../../context/AuthContext';
+import {
+    completeReservationOrder,
+    markReservationsViewed,
+    notifyReservationReady,
+    subscribeToAllReservations,
+    verifyReservation,
+} from '../../services/reservations';
 import { deleteProduct, subscribeToProducts, updateProduct } from '../../services/products';
 
 // --- Design Tokens (Extracted from Tailwind Config) ---
@@ -99,6 +107,47 @@ const toNumber = (value) => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+const getDisplayName = (userData, currentUser) => {
+    const firstName = userData?.firstName || userData?.firstname || '';
+    const lastName = userData?.lastName || userData?.lastname || '';
+    const firstLastName = `${firstName} ${lastName}`.trim();
+
+    return firstLastName || userData?.fullName || currentUser?.displayName || 'Admin';
+};
+
+const formatCurrency = (value, currency = 'USD') => {
+    const amount = Number(value || 0);
+
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency,
+    }).format(amount);
+};
+
+const getProductImageUrl = (product) =>
+    product?.imageUrl ||
+    'https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=1200';
+
+const buildAdminReservation = (reservation, products) => {
+    const product = products.find((item) => item.id === reservation.productId);
+    const quantity = Number(reservation.quantity || 0);
+    const unitPrice = Number(product?.pricing?.unitPrice ?? reservation.unitPrice ?? 0);
+    const currency = product?.pricing?.currency || reservation.currency || 'USD';
+
+    return {
+        ...reservation,
+        productName: product?.name || reservation.productName || 'Untitled Product',
+        productCategory: product?.category || reservation.productCategory || 'Uncategorized',
+        productDescription: product?.description || 'No description provided.',
+        imageUrl: getProductImageUrl(product),
+        quantity,
+        unitPrice,
+        currency,
+        totalPrice: quantity * unitPrice,
+        status: reservation.status || 'pending',
+    };
+};
+
 // --- Helper Components ---
 const IconButton = ({ icon, color, size = 24, style, onPress, disabled }) => (
     <TouchableOpacity
@@ -170,15 +219,197 @@ const InventoryItem = ({ title, status, isAvailable, imageUrl, onEdit, onDelete,
     </View>
 );
 
+const AdminOrdersView = ({
+    reservations,
+    filter,
+    onChangeFilter,
+    isLoading,
+    errorMessage,
+    pendingCount,
+    verifiedCount,
+    newCount,
+    actionReservationId,
+    notifyingReservationId,
+    completingReservationId,
+    onVerify,
+    onNotify,
+    onComplete,
+}) => {
+    const visibleReservations = reservations.filter((reservation) => reservation.status === filter);
+
+    return (
+        <View style={styles.ordersContent}>
+            <View style={styles.ordersHeader}>
+                <View>
+                    <Text style={styles.sectionTitle}>Reservations</Text>
+                    {newCount > 0 && (
+                        <Text style={styles.newReservationsBadge}>New reservations</Text>
+                    )}
+                </View>
+                <View style={styles.filterButtons}>
+                    <TouchableOpacity
+                        style={[styles.filterButton, filter === 'verified' && styles.filterButtonActive]}
+                        onPress={() => onChangeFilter('verified')}
+                    >
+                        <Text style={[styles.filterButtonText, filter === 'verified' && styles.filterButtonTextActive]}>
+                            Verified ({verifiedCount})
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.filterButton, filter === 'pending' && styles.filterButtonActive]}
+                        onPress={() => onChangeFilter('pending')}
+                    >
+                        <Text style={[styles.filterButtonText, filter === 'pending' && styles.filterButtonTextActive]}>
+                            Pending ({pendingCount})
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            {isLoading ? (
+                <View style={styles.ordersState}>
+                    <ActivityIndicator size="small" color={theme.colors.primary} />
+                    <Text style={styles.inventoryStateText}>Loading reservations...</Text>
+                </View>
+            ) : errorMessage ? (
+                <View style={styles.ordersState}>
+                    <Text style={styles.inventoryErrorText}>{errorMessage}</Text>
+                </View>
+            ) : visibleReservations.length === 0 ? (
+                <View style={styles.ordersState}>
+                    <Text style={styles.inventoryStateText}>No {filter} reservations.</Text>
+                </View>
+            ) : (
+                visibleReservations.map((reservation) => (
+                    <AdminReservationCard
+                        key={reservation.id}
+                        reservation={reservation}
+                        actionReservationId={actionReservationId}
+                        notifyingReservationId={notifyingReservationId}
+                        completingReservationId={completingReservationId}
+                        onVerify={onVerify}
+                        onNotify={onNotify}
+                        onComplete={onComplete}
+                    />
+                ))
+            )}
+        </View>
+    );
+};
+
+const AdminReservationCard = ({
+    reservation,
+    actionReservationId,
+    notifyingReservationId,
+    completingReservationId,
+    onVerify,
+    onNotify,
+    onComplete,
+}) => {
+    const isPending = reservation.status === 'pending';
+    const isVerified = reservation.status === 'verified';
+
+    return (
+        <View style={styles.reservationCard}>
+            <Image source={{ uri: reservation.imageUrl }} style={styles.reservationImage} />
+            <View style={styles.reservationBody}>
+                <View style={styles.reservationTopRow}>
+                    <Text style={styles.reservationTitle} numberOfLines={1}>
+                        {reservation.productName}
+                    </Text>
+                    <Text style={[styles.reservationStatus, isVerified && styles.reservationStatusVerified]}>
+                        {reservation.status}
+                    </Text>
+                </View>
+                <Text style={styles.reservationBuyer} numberOfLines={1}>
+                    {reservation.userName || reservation.userEmail || 'Customer'}
+                </Text>
+                <Text style={styles.reservationDescription} numberOfLines={2}>
+                    {reservation.productDescription}
+                </Text>
+                <View style={styles.reservationMetaRow}>
+                    <Text style={styles.reservationMeta}>Qty {reservation.quantity}</Text>
+                    <Text style={styles.reservationMeta}>
+                        {formatCurrency(reservation.totalPrice, reservation.currency)}
+                    </Text>
+                </View>
+
+                {isPending && (
+                    <TouchableOpacity
+                        style={[styles.verifyButton, actionReservationId === reservation.id && styles.iconBtnDisabled]}
+                        onPress={() => onVerify(reservation)}
+                        disabled={actionReservationId === reservation.id}
+                    >
+                        {actionReservationId === reservation.id ? (
+                            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                        ) : (
+                            <Text style={styles.reservationButtonText}>Verify</Text>
+                        )}
+                    </TouchableOpacity>
+                )}
+
+                {isVerified && (
+                    <View style={styles.verifiedActions}>
+                        <TouchableOpacity
+                            style={[styles.notifyButton, notifyingReservationId === reservation.id && styles.iconBtnDisabled]}
+                            onPress={() => onNotify(reservation)}
+                            disabled={notifyingReservationId === reservation.id}
+                        >
+                            {notifyingReservationId === reservation.id ? (
+                                <ActivityIndicator size="small" color={theme.colors.primary} />
+                            ) : (
+                                <Text style={styles.notifyButtonText}>
+                                    {reservation.buyerNotified ? 'Notify Again' : 'Notify'}
+                                </Text>
+                            )}
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.completeButton, completingReservationId === reservation.id && styles.iconBtnDisabled]}
+                            onPress={() => onComplete(reservation)}
+                            disabled={completingReservationId === reservation.id}
+                        >
+                            {completingReservationId === reservation.id ? (
+                                <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                            ) : (
+                                <Text style={styles.reservationButtonText}>Complete Order</Text>
+                            )}
+                        </TouchableOpacity>
+                    </View>
+                )}
+            </View>
+        </View>
+    );
+};
+
 // --- Main Screen ---
 export default function DashboardScreen({ navigation }) {
+    const { currentUser, userData, logout } = useContext(AuthContext);
     const [products, setProducts] = useState([]);
     const [isLoadingProducts, setIsLoadingProducts] = useState(true);
     const [productsError, setProductsError] = useState('');
+    const [reservations, setReservations] = useState([]);
+    const [isLoadingReservations, setIsLoadingReservations] = useState(true);
+    const [reservationsError, setReservationsError] = useState('');
+    const [activeView, setActiveView] = useState('inventory');
+    const [reservationFilter, setReservationFilter] = useState('pending');
+    const [actionReservationId, setActionReservationId] = useState(null);
+    const [notifyingReservationId, setNotifyingReservationId] = useState(null);
+    const [completingReservationId, setCompletingReservationId] = useState(null);
     const [deletingProductId, setDeletingProductId] = useState(null);
     const [editingProduct, setEditingProduct] = useState(null);
     const [editForm, setEditForm] = useState(null);
     const [isSavingEdit, setIsSavingEdit] = useState(false);
+    const displayName = getDisplayName(userData, currentUser);
+    const activeReservations = useMemo(
+        () =>
+            reservations
+                .filter((reservation) => reservation.status === 'pending' || reservation.status === 'verified')
+                .map((reservation) => buildAdminReservation(reservation, products)),
+        [reservations, products]
+    );
+    const pendingReservationsCount = activeReservations.filter((reservation) => reservation.status === 'pending').length;
+    const verifiedReservationsCount = activeReservations.filter((reservation) => reservation.status === 'verified').length;
+    const newReservationsCount = activeReservations.filter((reservation) => reservation.adminViewed === false).length;
 
     useEffect(() => {
         const unsubscribe = subscribeToProducts(
@@ -195,6 +426,92 @@ export default function DashboardScreen({ navigation }) {
 
         return unsubscribe;
     }, []);
+
+    useEffect(() => {
+        const unsubscribe = subscribeToAllReservations(
+            (loadedReservations) => {
+                setReservations(loadedReservations);
+                setReservationsError('');
+                setIsLoadingReservations(false);
+            },
+            (errorMessage) => {
+                setReservationsError(errorMessage);
+                setIsLoadingReservations(false);
+            }
+        );
+
+        return unsubscribe;
+    }, []);
+
+    useEffect(() => {
+        if (activeView !== 'orders') {
+            return;
+        }
+
+        const unviewedIds = activeReservations
+            .filter((reservation) => reservation.adminViewed === false)
+            .map((reservation) => reservation.id);
+
+        if (unviewedIds.length > 0) {
+            markReservationsViewed(unviewedIds);
+        }
+    }, [activeView, activeReservations]);
+
+    const handleVerifyReservation = async (reservation) => {
+        if (actionReservationId) {
+            return;
+        }
+
+        setActionReservationId(reservation.id);
+        const result = await verifyReservation(reservation, currentUser);
+        setActionReservationId(null);
+
+        if (!result.success) {
+            Alert.alert('Reservation not verified', result.error);
+            return;
+        }
+
+        Alert.alert('Reservation verified', 'Product stock has been updated.');
+    };
+
+    const handleNotifyReservation = async (reservation) => {
+        if (notifyingReservationId) {
+            return;
+        }
+
+        setNotifyingReservationId(reservation.id);
+        const result = await notifyReservationReady(reservation);
+        setNotifyingReservationId(null);
+
+        if (!result.success) {
+            Alert.alert('Buyer not notified', result.error);
+            return;
+        }
+
+        Alert.alert(
+            result.alreadyExists ? 'Notification already exists' : 'Buyer notified',
+            result.alreadyExists
+                ? 'This reservation already has an unread pickup notification.'
+                : 'The pickup notification is ready in the customer app.'
+        );
+    };
+
+    const handleCompleteReservation = async (reservation) => {
+        if (completingReservationId) {
+            return;
+        }
+
+        setCompletingReservationId(reservation.id);
+        const result = await completeReservationOrder(reservation, currentUser);
+        setCompletingReservationId(null);
+
+        if (!result.success) {
+            Alert.alert('Order not completed', result.error);
+            return;
+        }
+
+        Alert.alert('Order completed', 'A successful transaction was saved to Firebase.');
+    };
 
     const openEditProduct = (product) => {
         setEditingProduct(product);
@@ -331,7 +648,6 @@ export default function DashboardScreen({ navigation }) {
             {/* Top App Bar */}
             <View style={styles.header}>
                 <View style={styles.headerLeft}>
-                    <IconButton icon="arrow-back" onPress={() => navigation.navigate('Home')} style={{ marginRight: 8, marginLeft: -8 }} />
                     <View style={styles.logoWrapper}>
                         <MaterialIcons name="eco" size={24} color={theme.colors.onPrimary} />
                     </View>
@@ -341,140 +657,176 @@ export default function DashboardScreen({ navigation }) {
                     </View>
                 </View>
                 <View style={styles.headerRight}>
-                    <IconButton icon="notifications" />
-                    <TouchableOpacity style={styles.profileWrapper}>
-                        <Image
-                            source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCfp1NzjXchaFGJsTJ6Epq5H9oFY9rrGQG3-9VA6il5KFNw_J_ikegwP6UhQkVmKaD22yWlK6nTpq5tsl5uZSa--Uvxzd-yDrqJvsi7kmDBoQWNsI8cr-TMMvSLFc1beRMqWKioSiK6x0tPCeOZlifAWhrBMhMmAr_5Nkx5gcFTzKNrC3Leh1T12ZKgFIsiWQyjnk46wecE1aDP96lHY_SjqUzIfRlAgoHDZtrLccFlyFeWg5UTUIW3IKyBZGTPfEBx99vqw3ub2Ac' }}
-                            style={styles.profileImage}
-                        />
+                    <Text style={styles.headerUserName} numberOfLines={1}>
+                        {displayName}
+                    </Text>
+                    <TouchableOpacity style={styles.logoutButton} onPress={logout}>
+                        <MaterialIcons name="logout" size={18} color={theme.colors.onPrimary} />
+                        <Text style={styles.logoutText}>Logout</Text>
                     </TouchableOpacity>
                 </View>
             </View>
 
-            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            {activeView === 'inventory' ? (
+                <>
+                    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-                {/* Metrics Section */}
-                <View style={styles.metricsContainer}>
-                    <View style={styles.salesCard}>
-                        <View style={styles.salesCardHeader}>
-                            <Text style={styles.salesLabel}>Total Sales</Text>
-                            <View style={styles.trendBadge}>
-                                <MaterialIcons name="trending-up" size={14} color={theme.colors.successText} />
-                                <Text style={styles.trendText}>+12%</Text>
+                        {/* Metrics Section */}
+                        <View style={styles.metricsContainer}>
+                            <View style={styles.salesCard}>
+                                <View style={styles.salesCardHeader}>
+                                    <Text style={styles.salesLabel}>Total Sales</Text>
+                                    <View style={styles.trendBadge}>
+                                        <MaterialIcons name="trending-up" size={14} color={theme.colors.successText} />
+                                        <Text style={styles.trendText}>+12%</Text>
+                                    </View>
+                                </View>
+                                <View style={styles.salesAmountRow}>
+                                    <Text style={styles.salesAmount}>$4,820</Text>
+                                    <Text style={styles.salesPeriod}>this week</Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.metricsSubRow}>
+                                <View style={styles.metricCardPrimary}>
+                                    <MaterialIcons name="calendar-today" size={24} color={theme.colors.onPrimaryContainer} style={{ marginBottom: theme.spacing.sm }} />
+                                    <Text style={styles.metricNumberPrimary}>{pendingReservationsCount}</Text>
+                                    <Text style={{color: 'white', fontWeight: 'bold', fontSize: theme.typography.labelMd.fontSize, opacity: 0.8, marginTop: 4}}>PENDING BUY</Text>
+                                </View>
+
+                                <View style={styles.metricCardSecondary}>
+                                    <MaterialIcons name="verified" size={24} color={theme.colors.successText} style={{ marginBottom: theme.spacing.sm }} />
+                                    <Text style={styles.metricNumberSecondary}>{verifiedReservationsCount}</Text>
+                                    <Text style={styles.metricLabelSecondary}>VERIFIED</Text>
+                                </View>
                             </View>
                         </View>
-                        <View style={styles.salesAmountRow}>
-                            <Text style={styles.salesAmount}>$4,820</Text>
-                            <Text style={styles.salesPeriod}>this week</Text>
+
+                        {/* Featured Products */}
+                        <View style={styles.section}>
+                            <View style={styles.sectionHeader}>
+                                <Text style={styles.sectionTitle}>Top Sellers</Text>
+                                <TouchableOpacity style={styles.viewAllBtn}>
+                                    <Text style={styles.viewAllText}>View All</Text>
+                                    <MaterialIcons name="chevron-right" size={20} color={theme.colors.primary} />
+                                </TouchableOpacity>
+                            </View>
+
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalScrollContent}>
+                                <ProductCard
+                                    title="Sourdough Loaf"
+                                    price="$8.50"
+                                    stockLabel="12 left"
+                                    imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAAhumGQve9mgrEuHpsxG05UljtPhF21uu9B7vTr2C1FUfJ-lIwr_LEtKuftrNlDUOWXpnwMXDJ03xg-JbEEe26rLVxAS1wLxFl6Akpk-ewzLNcLMJegpVs03PKudgOmMJXwd9asxV9mu9UqdaWaKZykxlk1BdbyfSwWjSI40rUkhY0PqJQdewyNyQXCfaMaqpV3fv7jp6RYVF0bQg0D_n6-mdyme4fh7cXyp8iJ2W4QAl_620m2Q_XyeKFV1CBiBSB_gH2aqUo0sg"
+                                />
+                                <ProductCard
+                                    title="Butter Croissants"
+                                    price="$4.25"
+                                    stockLabel="Low stock"
+                                    isLowStock={true}
+                                    imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAXxc6JqG8eLMdRfdEvx0muIIODBJPJpVNVh8yf8gwW4j6zI21uosoKJBX_Ni0Xew0Wf_UeJXw4pNTD_xwEy-mPWULaj9w9EbJYW07DP0SiQ5LnhybdcYOHAxRqUl64Ow_H11wElWP4Qjn_WzpBlbc8XVaMFqx2nWXCd7hjJ7U4rrlTO9FsDkwyvGmEpNuDr2jmmqzfnHtTErW5Nc1v8u0o4FsO47_DprK3_3yWXAm9mS1Ow0w-WOrX550fQntjdMqSJLL8_caGgaI"
+                                />
+                                <ProductCard
+                                    title="Olive Focaccia"
+                                    price="$6.00"
+                                    stockLabel="8 left"
+                                    imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuBs7gHJUymIuhaTJ7QVgkFoUBppXbJCspk7u18Kzk1l-CFlSMmIxnaxraZWEwxszKsKb3YInnex40qBSQ7flPqtFayelQNv7d0Bl_vN73PDNzhr5wWBIJ9YCRNF-t_IKiPxQImo_ShqnmNndinHPwL8OwNd8GjMSVVNxidptMFWvcYsJFWLLgRbevUQQTuLHZBCNSu80g0DAqZLTWO4aVXL5BBGI9zpNx4KYpzuG-sfC7sySz5oK65lKjjpSCrC8x46Kcpa9KZnxnk"
+                                />
+                            </ScrollView>
                         </View>
-                    </View>
 
-                    <View style={styles.metricsSubRow}>
-                        <View style={styles.metricCardPrimary}>
-                            <MaterialIcons name="calendar-today" size={24} color={theme.colors.onPrimaryContainer} style={{ marginBottom: theme.spacing.sm }} />
-                            <Text style={styles.metricNumberPrimary}>24</Text>
-                            <Text style={styles.metricLabelPrimary}>PENDING BUY</Text>
+                        {/* Manage Inventory */}
+                        <View style={styles.section}>
+                            <Text style={[styles.sectionTitle, { marginBottom: theme.spacing.sm }]}>Manage Inventory</Text>
+                            <View style={styles.inventoryList}>
+                                {isLoadingProducts ? (
+                                    <View style={styles.inventoryState}>
+                                        <ActivityIndicator size="small" color={theme.colors.primary} />
+                                        <Text style={styles.inventoryStateText}>Loading products...</Text>
+                                    </View>
+                                ) : productsError ? (
+                                    <View style={styles.inventoryState}>
+                                        <Text style={styles.inventoryErrorText}>{productsError}</Text>
+                                    </View>
+                                ) : products.length === 0 ? (
+                                    <View style={styles.inventoryState}>
+                                        <Text style={styles.inventoryStateText}>No products created yet.</Text>
+                                    </View>
+                                ) : (
+                                    products.map((product) => {
+                                        const status = getInventoryStatus(product);
+
+                                        return (
+                                            <InventoryItem
+                                                key={product.id}
+                                                title={product.name || 'Untitled Product'}
+                                                status={status.label}
+                                                isAvailable={status.isAvailable}
+                                                imageUrl={product.imageUrl || FALLBACK_PRODUCT_IMAGE}
+                                                isDeleting={deletingProductId === product.id}
+                                                onEdit={() => openEditProduct(product)}
+                                                onDelete={() => handleDeleteProduct(product)}
+                                            />
+                                        );
+                                    })
+                                )}
+                            </View>
                         </View>
 
-                        <View style={styles.metricCardSecondary}>
-                            <MaterialIcons name="event-busy" size={24} color={theme.colors.error} style={{ marginBottom: theme.spacing.sm }} />
-                            <Text style={styles.metricNumberSecondary}>3</Text>
-                            <Text style={styles.metricLabelSecondary}>CANCELLED</Text>
-                        </View>
-                    </View>
-                </View>
-
-                {/* Featured Products */}
-                <View style={styles.section}>
-                    <View style={styles.sectionHeader}>
-                        <Text style={styles.sectionTitle}>Top Sellers</Text>
-                        <TouchableOpacity style={styles.viewAllBtn}>
-                            <Text style={styles.viewAllText}>View All</Text>
-                            <MaterialIcons name="chevron-right" size={20} color={theme.colors.primary} />
-                        </TouchableOpacity>
-                    </View>
-
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalScrollContent}>
-                        <ProductCard
-                            title="Sourdough Loaf"
-                            price="$8.50"
-                            stockLabel="12 left"
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAAhumGQve9mgrEuHpsxG05UljtPhF21uu9B7vTr2C1FUfJ-lIwr_LEtKuftrNlDUOWXpnwMXDJ03xg-JbEEe26rLVxAS1wLxFl6Akpk-ewzLNcLMJegpVs03PKudgOmMJXwd9asxV9mu9UqdaWaKZykxlk1BdbyfSwWjSI40rUkhY0PqJQdewyNyQXCfaMaqpV3fv7jp6RYVF0bQg0D_n6-mdyme4fh7cXyp8iJ2W4QAl_620m2Q_XyeKFV1CBiBSB_gH2aqUo0sg"
-                        />
-                        <ProductCard
-                            title="Butter Croissants"
-                            price="$4.25"
-                            stockLabel="Low stock"
-                            isLowStock={true}
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuAXxc6JqG8eLMdRfdEvx0muIIODBJPJpVNVh8yf8gwW4j6zI21uosoKJBX_Ni0Xew0Wf_UeJXw4pNTD_xwEy-mPWULaj9w9EbJYW07DP0SiQ5LnhybdcYOHAxRqUl64Ow_H11wElWP4Qjn_WzpBlbc8XVaMFqx2nWXCd7hjJ7U4rrlTO9FsDkwyvGmEpNuDr2jmmqzfnHtTErW5Nc1v8u0o4FsO47_DprK3_3yWXAm9mS1Ow0w-WOrX550fQntjdMqSJLL8_caGgaI"
-                        />
-                        <ProductCard
-                            title="Olive Focaccia"
-                            price="$6.00"
-                            stockLabel="8 left"
-                            imageUrl="https://lh3.googleusercontent.com/aida-public/AB6AXuBs7gHJUymIuhaTJ7QVgkFoUBppXbJCspk7u18Kzk1l-CFlSMmIxnaxraZWEwxszKsKb3YInnex40qBSQ7flPqtFayelQNv7d0Bl_vN73PDNzhr5wWBIJ9YCRNF-t_IKiPxQImo_ShqnmNndinHPwL8OwNd8GjMSVVNxidptMFWvcYsJFWLLgRbevUQQTuLHZBCNSu80g0DAqZLTWO4aVXL5BBGI9zpNx4KYpzuG-sfC7sySz5oK65lKjjpSCrC8x46Kcpa9KZnxnk"
-                        />
                     </ScrollView>
-                </View>
 
-                {/* Manage Inventory */}
-                <View style={styles.section}>
-                    <Text style={[styles.sectionTitle, { marginBottom: theme.spacing.sm }]}>Manage Inventory</Text>
-                    <View style={styles.inventoryList}>
-                        {isLoadingProducts ? (
-                            <View style={styles.inventoryState}>
-                                <ActivityIndicator size="small" color={theme.colors.primary} />
-                                <Text style={styles.inventoryStateText}>Loading products...</Text>
-                            </View>
-                        ) : productsError ? (
-                            <View style={styles.inventoryState}>
-                                <Text style={styles.inventoryErrorText}>{productsError}</Text>
-                            </View>
-                        ) : products.length === 0 ? (
-                            <View style={styles.inventoryState}>
-                                <Text style={styles.inventoryStateText}>No products created yet.</Text>
-                            </View>
-                        ) : (
-                            products.map((product) => {
-                                const status = getInventoryStatus(product);
-
-                                return (
-                                    <InventoryItem
-                                        key={product.id}
-                                        title={product.name || 'Untitled Product'}
-                                        status={status.label}
-                                        isAvailable={status.isAvailable}
-                                        imageUrl={product.imageUrl || FALLBACK_PRODUCT_IMAGE}
-                                        isDeleting={deletingProductId === product.id}
-                                        onEdit={() => openEditProduct(product)}
-                                        onDelete={() => handleDeleteProduct(product)}
-                                    />
-                                );
-                            })
-                        )}
-                    </View>
-                </View>
-
-            </ScrollView>
-
-            {/* Floating Action Button */}
-            <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={() => navigation.navigate('CreateProduct')}>
-                <MaterialIcons name="add" size={28} color={theme.colors.onPrimary} />
-            </TouchableOpacity>
+                    {/* Floating Action Button */}
+                    <TouchableOpacity style={styles.fab} activeOpacity={0.8} onPress={() => navigation.navigate('CreateProduct')}>
+                        <MaterialIcons name="add" size={28} color={theme.colors.onPrimary} />
+                    </TouchableOpacity>
+                </>
+            ) : (
+                <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+                    <AdminOrdersView
+                        reservations={activeReservations}
+                        filter={reservationFilter}
+                        onChangeFilter={setReservationFilter}
+                        isLoading={isLoadingReservations}
+                        errorMessage={reservationsError}
+                        pendingCount={pendingReservationsCount}
+                        verifiedCount={verifiedReservationsCount}
+                        newCount={newReservationsCount}
+                        actionReservationId={actionReservationId}
+                        notifyingReservationId={notifyingReservationId}
+                        completingReservationId={completingReservationId}
+                        onVerify={handleVerifyReservation}
+                        onNotify={handleNotifyReservation}
+                        onComplete={handleCompleteReservation}
+                    />
+                </ScrollView>
+            )}
 
             {/* Bottom Navigation */}
             <View style={styles.bottomNav}>
-                <TouchableOpacity style={styles.navItem}>
-                    <View style={[styles.navIconActive]}>
-                        <MaterialIcons name="inventory" size={24} color={theme.colors.primary} />
+                <TouchableOpacity style={styles.navItem} onPress={() => setActiveView('inventory')}>
+                    <View style={activeView === 'inventory' ? styles.navIconActive : styles.navIcon}>
+                        <MaterialIcons
+                            name="inventory"
+                            size={24}
+                            color={activeView === 'inventory' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                        />
                     </View>
-                    <Text style={styles.navTextActive}>Inventory</Text>
+                    <Text style={activeView === 'inventory' ? styles.navTextActive : styles.navText}>Inventory</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.navItem}>
-                    <View style={styles.navIcon}>
-                        <MaterialIcons name="shopping-cart" size={24} color={theme.colors.onSurfaceVariant} />
+                <TouchableOpacity style={styles.navItem} onPress={() => setActiveView('orders')}>
+                    <View style={activeView === 'orders' ? styles.navIconActive : styles.navIcon}>
+                        <MaterialIcons
+                            name="shopping-cart"
+                            size={24}
+                            color={activeView === 'orders' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                        />
+                        {newReservationsCount > 0 && activeView !== 'orders' && (
+                            <View style={styles.navBadge}>
+                                <Text style={styles.navBadgeText}>{newReservationsCount}</Text>
+                            </View>
+                        )}
                     </View>
-                    <Text style={styles.navText}>Orders</Text>
+                    <Text style={activeView === 'orders' ? styles.navTextActive : styles.navText}>Orders</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.navItem}>
                     <View style={styles.navIcon}>
@@ -639,9 +991,11 @@ const styles = StyleSheet.create({
         zIndex: 50,
     },
     headerLeft: {
+        flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.spacing.xs,
+        minWidth: 0,
     },
     logoWrapper: {
         width: 40,
@@ -666,6 +1020,26 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: theme.spacing.sm,
+        flexShrink: 1,
+        maxWidth: '48%',
+    },
+    headerUserName: {
+        flexShrink: 1,
+        ...theme.typography.labelMd,
+        color: theme.colors.onSurfaceVariant,
+    },
+    logoutButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: theme.colors.primary,
+        paddingHorizontal: 12,
+        paddingVertical: 9,
+        borderRadius: theme.borderRadius.full,
+    },
+    logoutText: {
+        ...theme.typography.labelMd,
+        color: theme.colors.onPrimary,
     },
     iconBtn: {
         width: 40,
@@ -941,6 +1315,175 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
     },
+    ordersContent: {
+        gap: theme.spacing.sm,
+    },
+    ordersHeader: {
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        borderRadius: theme.borderRadius.xl,
+        borderWidth: 1,
+        borderColor: theme.colors.surfaceContainer,
+        padding: theme.spacing.md,
+        marginBottom: theme.spacing.sm,
+        gap: theme.spacing.sm,
+    },
+    newReservationsBadge: {
+        alignSelf: 'flex-start',
+        marginTop: theme.spacing.base,
+        backgroundColor: theme.colors.errorContainer,
+        color: theme.colors.error,
+        borderRadius: theme.borderRadius.full,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        fontSize: 12,
+        fontWeight: '800',
+        overflow: 'hidden',
+    },
+    filterButtons: {
+        flexDirection: 'row',
+        gap: theme.spacing.sm,
+    },
+    filterButton: {
+        flex: 1,
+        minHeight: 44,
+        borderRadius: theme.borderRadius.full,
+        borderWidth: 1,
+        borderColor: theme.colors.outlineVariant,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        paddingHorizontal: theme.spacing.sm,
+    },
+    filterButtonActive: {
+        backgroundColor: theme.colors.primary,
+        borderColor: theme.colors.primary,
+    },
+    filterButtonText: {
+        ...theme.typography.labelLg,
+        color: theme.colors.onSurfaceVariant,
+    },
+    filterButtonTextActive: {
+        color: theme.colors.onPrimary,
+    },
+    ordersState: {
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        padding: theme.spacing.md,
+        borderRadius: theme.borderRadius.xl,
+        borderWidth: 1,
+        borderColor: theme.colors.surfaceContainer,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 96,
+        gap: theme.spacing.base,
+    },
+    reservationCard: {
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        borderRadius: theme.borderRadius.xl,
+        borderWidth: 1,
+        borderColor: theme.colors.surfaceContainer,
+        padding: theme.spacing.sm,
+        marginBottom: theme.spacing.sm,
+        flexDirection: 'row',
+        gap: theme.spacing.sm,
+    },
+    reservationImage: {
+        width: 88,
+        height: 104,
+        borderRadius: theme.borderRadius.lg,
+        backgroundColor: theme.colors.surfaceDim,
+        resizeMode: 'cover',
+    },
+    reservationBody: {
+        flex: 1,
+        minWidth: 0,
+    },
+    reservationTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: theme.spacing.base,
+        marginBottom: 2,
+    },
+    reservationTitle: {
+        flex: 1,
+        ...theme.typography.labelLg,
+        color: theme.colors.onSurface,
+    },
+    reservationStatus: {
+        ...theme.typography.labelMd,
+        color: theme.colors.primary,
+        backgroundColor: theme.colors.primaryFixed || '#dfe8a6',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: theme.borderRadius.full,
+        overflow: 'hidden',
+        textTransform: 'uppercase',
+    },
+    reservationStatusVerified: {
+        color: theme.colors.successText,
+        backgroundColor: theme.colors.successBackground,
+    },
+    reservationBuyer: {
+        ...theme.typography.labelMd,
+        color: theme.colors.onSurfaceVariant,
+        marginBottom: 4,
+    },
+    reservationDescription: {
+        ...theme.typography.bodySm,
+        color: theme.colors.onSurfaceVariant,
+        marginBottom: 8,
+    },
+    reservationMetaRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: theme.spacing.base,
+        marginBottom: theme.spacing.sm,
+    },
+    reservationMeta: {
+        ...theme.typography.labelMd,
+        color: theme.colors.primary,
+    },
+    verifyButton: {
+        minHeight: 40,
+        borderRadius: theme.borderRadius.full,
+        backgroundColor: theme.colors.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: theme.spacing.md,
+    },
+    verifiedActions: {
+        flexDirection: 'row',
+        gap: theme.spacing.sm,
+    },
+    notifyButton: {
+        flex: 1,
+        minHeight: 40,
+        borderRadius: theme.borderRadius.full,
+        borderWidth: 1,
+        borderColor: theme.colors.outlineVariant,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: theme.colors.surfaceContainerLowest,
+        paddingHorizontal: theme.spacing.sm,
+    },
+    notifyButtonText: {
+        ...theme.typography.labelMd,
+        color: theme.colors.primary,
+    },
+    completeButton: {
+        flex: 1.4,
+        minHeight: 40,
+        borderRadius: theme.borderRadius.full,
+        backgroundColor: theme.colors.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: theme.spacing.sm,
+    },
+    reservationButtonText: {
+        ...theme.typography.labelMd,
+        color: theme.colors.onPrimary,
+    },
     modalOverlay: {
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.35)',
@@ -1084,6 +1627,23 @@ const styles = StyleSheet.create({
         paddingHorizontal: 20,
         paddingVertical: 4,
         borderRadius: theme.borderRadius.full,
+    },
+    navBadge: {
+        position: 'absolute',
+        top: -6,
+        right: 8,
+        minWidth: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: theme.colors.error,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 4,
+    },
+    navBadgeText: {
+        color: theme.colors.onError,
+        fontSize: 10,
+        fontWeight: '800',
     },
     navTextActive: {
         ...theme.typography.labelMd,

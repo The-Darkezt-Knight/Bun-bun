@@ -185,9 +185,9 @@ export default function CreateAccountScreen({navigation}) {
                 <ActivityIndicator color="#111827" />
               ) : (
                 <>
-                  <Image 
-                    source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg' }} 
-                    style={styles.googleIcon} 
+                  <Image
+                    source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg' }}
+                    style={styles.googleIcon}
                   />
                   <Text style={styles.googleButtonText}>Continue with Google</Text>
                 </>

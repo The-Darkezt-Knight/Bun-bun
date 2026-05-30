@@ -70,12 +70,10 @@ export const signInWithGoogle = async () => {
     const result = await signInWithPopup(auth, provider);
     const user = result.user;
 
-    // Check if user exists in Firestore
     const userDocRef = doc(db, 'users', user.uid);
     const userDoc = await getDoc(userDocRef);
 
     if (!userDoc.exists()) {
-      // Create user profile in Firestore if it's their first time
       await setDoc(userDocRef, {
         uid: user.uid,
         email: user.email,

@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from 'firebase/auth';
+import { browserLocalPersistence, browserPopupRedirectResolver, initializeAuth } from 'firebase/auth';
 import { getFirestore } from "firebase/firestore";
 
 // Your web app's Firebase configuration
@@ -15,8 +15,11 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// On Web, getAuth automatically uses indexedDB/localStorage persistence
-const auth = getAuth(app);
+// Keep web auth in localStorage so clearing site data/localStorage signs the user out.
+const auth = initializeAuth(app, {
+  persistence: browserLocalPersistence,
+  popupRedirectResolver: browserPopupRedirectResolver,
+});
 
 const db = getFirestore(app);
 
